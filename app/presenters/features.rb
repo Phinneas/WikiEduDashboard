@@ -59,4 +59,8 @@ class Features
   def self.enable_revision_feedback?
     Rails.env != 'production'
   end
+
+  def self.enable_chat?
+    ENV['enable_chat'] == 'true'
+  end
 end
