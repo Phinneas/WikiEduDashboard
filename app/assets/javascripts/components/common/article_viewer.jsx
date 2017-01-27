@@ -2,13 +2,14 @@ import React from 'react';
 import OnClickOutside from 'react-onclickoutside';
 
 const ArticleViewer = React.createClass({
-  displayName: 'ArticleViweer',
+  displayName: 'ArticleViewer',
 
   propTypes: {
     article: React.PropTypes.object.isRequired,
     showButtonLabel: React.PropTypes.string,
     hideButtonLabel: React.PropTypes.string,
-    largeButton: React.PropTypes.bool
+    largeButton: React.PropTypes.bool,
+    users: React.PropTypes.array
   },
 
   getInitialState() {
@@ -36,6 +37,14 @@ const ArticleViewer = React.createClass({
     if (!this.state.fetched) {
       this.fetchParsedArticle();
     }
+    if (!this.state.userIdsFetched) {
+      // TODO: only do this for enwiki
+      this.fetchUserIds();
+    }
+    if (!this.state.whocolorFetched) {
+      // TODO: only do this for enwiki
+      this.fetchWhocolorHtml();
+    }
   },
 
   hideArticle() {
@@ -50,41 +59,113 @@ const ArticleViewer = React.createClass({
     return `https://${this.props.article.language}.${this.props.article.project}.org`;
   },
 
+  whocolorUrl() {
+    return `https://api.wikicolor.net/whocolor/index.php?title=${this.props.article.title}`;
+  },
+
   parsedArticleUrl() {
     const wikiUrl = this.wikiUrl();
-    const queryBase = `${wikiUrl}/api/rest_v1/page/html/`;
-    const articleUrl = `${queryBase}${this.props.article.title}`;
+    const queryBase = `${wikiUrl}/w/api.php?action=parse&disableeditsection=true&format=json`;
+    const articleUrl = `${queryBase}&page=${this.props.article.title}`;
 
     return articleUrl;
   },
 
   processHtml(html) {
-    // The mediawiki RESTbase API can return html that uses the 'base' attribute
-    // to correctly style the HTML of an article. However, the page-local anchor
-    // links for footnotes and references are broken, because they use the 'base'
-    // attribute and end up pointing to the wiki (on the wrong page).
-    // To correct this, we replace all those page-local anchor links with absolute
-    // links to the current location.
-    const absoluteAnchorLink = `<a href="${window.location.href.split('#')[0]}#`;
-    const samePageAnchorMatcher = /<a href="#/g;
-    return html.replace(samePageAnchorMatcher, absoluteAnchorLink);
+    // The mediawiki parse API returns the same HTML as the rendered article on
+    // Wikipedia. This means relative links to other articles are broken.
+    // Here we turn them into full urls pointing back to the wiki.
+    // However, the page-local anchor links for footnotes and references are
+    // fine; they should link to the footnotes within the ArticleViewer.
+    const absoluteLink = `<a href="${this.wikiUrl()}/`;
+    // This matches links that don't start with # or http. These are
+    // assumed to be relative links to other wiki pages.
+    const relativeLinkMatcher = /(<a href=")(?!http)[^#]/g;
+    return html.replace(relativeLinkMatcher, absoluteLink);
+  },
+
+  colors: ['red', 'blue', 'green', 'yellow'],
+
+  highlightAuthors() {
+    let html = this.state.whocolorHtml;
+    let i = 0;
+    _.forEach(this.state.users, (user) => {
+      const styledAuthorSpan = `<span style="background: ${this.colors[i]}" class="author-token token-authorid-${user.userid}"`;
+      const authorSpanMatcher = new RegExp(`<span class="author-token token-authorid-${user.userid}`, 'g');
+      html = html.replace(authorSpanMatcher, styledAuthorSpan);
+      i += 1;
+    });
+    this.setState({
+      highlightedHtml: html
+    });
   },
 
   fetchParsedArticle() {
-    $.ajax(
-      {
-        url: this.parsedArticleUrl(),
-        crossDomain: true,
-        success: (html) => {
-          this.setState({
-            parsedArticle: this.processHtml(html),
-            fetched: true
-          });
-        }
-      });
+    $.ajax({
+      dataType: 'jsonp',
+      url: this.parsedArticleUrl(),
+      success: (data) => {
+        this.setState({
+          parsedArticle: this.processHtml(data.parse.text['*']),
+          articlePageId: data.parse.pageid,
+          fetched: true
+        });
+      }
+    });
+  },
+
+  fetchWhocolorHtml() {
+    $.ajax({
+      url: this.whocolorUrl(),
+      crossDomain: true,
+      success: (json) => {
+        this.setState({
+          whocolorHtml: this.processHtml(json.html),
+          whocolorFetched: true
+        });
+        this.highlightAuthors();
+      }
+    });
+  },
+
+  wikiUserQueryUrl() {
+    const baseUrl = `https://${this.props.article.language}.${this.props.article.project}.org/w/api.php`;
+    const usersParam = this.props.users.join('|');
+    return `${baseUrl}?action=query&list=users&format=json&ususers=${usersParam}`;
+  },
+
+  // These are mediawiki user ids, and don't necessarily match the dashboard
+  // database user ids, so we must fetch them by username from the wiki.
+  fetchUserIds() {
+    $.ajax({
+      dataType: 'jsonp',
+      url: this.wikiUserQueryUrl(),
+      success: (json) => {
+        this.setState({
+          users: json.query.users,
+          usersIdsFetched: true
+        });
+      }
+    });
   },
 
   render() {
+    let colorLegend;
+    if (this.state.highlightedHtml) {
+      const rows = this.state.users.map((user, i) => {
+        return (
+          <tr key={`legend-${user.name}`}>
+            <td>{user.name}</td>
+            <td>{this.colors[i]}</td>
+          </tr>
+        );
+      });
+      colorLegend = (
+        <table>
+          <tbody>{rows}</tbody>
+        </table>
+      );
+    }
     let button;
     let showButtonStyle;
     if (this.props.largeButton) {
@@ -99,29 +180,31 @@ const ArticleViewer = React.createClass({
       button = <button onClick={this.showArticle} className={showButtonStyle}>{this.showButtonLabel()}</button>;
     }
 
-    let articleModal;
-    // Even if we have the content, we need to not render it — even hidden — or else
-    // it will prevent other ajax request from working, since we include the whole
-    // contents of a Wikipedia html page, including domain info that ajax uses.
-    if (!this.state.parsedArticle || !this.state.showArticle) {
-      articleModal = <div />;
+    let style = 'hidden';
+    if (this.state.showArticle && this.state.fetched) {
+      style = '';
+    }
+    const className = `article-viewer ${style}`;
+
+    let article;
+    if (this.state.diff === '') {
+      article = '<div />';
     } else {
-      articleModal = (
-        <div className="article-viewer">
-          <p>
-            <a className="button dark small" href={this.props.article.url} target="_blank">{I18n.t('articles.view_on_wiki')}</a>
-            {button}
-            <a className="pull-right button small" href={`${window.location.origin}/feedback?subject=Article Viewer`} target="_blank">How did the article viewer work for you?</a>
-          </p>
-          <div className="parsed-article" dangerouslySetInnerHTML={{ __html: this.state.parsedArticle }} />
-        </div>
-      );
+      article = this.state.highlightedHtml || this.state.whocolorHtml || this.state.parsedArticle;
     }
 
     return (
       <div>
         {button}
-        {articleModal}
+        <div className={className}>
+          {colorLegend}
+          <p>
+            <a className="button dark small" href={this.props.article.url} target="_blank">{I18n.t('articles.view_on_wiki')}</a>
+            {button}
+            <a className="pull-right button small" href="/feedback?subject=Article Viewer" target="_blank">How did the article viewer work for you?</a>
+          </p>
+          <div className="parsed-article" dangerouslySetInnerHTML={{ __html: article }} />
+        </div>
       </div>
     );
   }
