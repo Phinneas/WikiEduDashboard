@@ -35,6 +35,38 @@ Toma en mente que tu, en rol de organizador o voluntario, tienes el derecho a se
 WIKISLIDE
   end
 
+  let(:quiz_wikitext) do
+    <<-WIKISLIDE
+== Five Pillars quiz ==
+
+{{Training module quiz
+
+| question = An editor has written to you saying that another editor has revealed personal information about them on-wiki in an attempt to intimidate them from working on an article about a contentious subject. They have supplied a link to a diff. Before investigating further, you want to acknowledge the report. Should you write:
+| correct_answer_id = 1
+| answer_1 = Present the facts in a careful way, to persuade readers to draw certain conclusions.
+| explanation_1 = Incorrect. Remember, a Wikipedia article should be neutral, balanced, and fair to all views. You want readers to have access to facts, and trust that those facts will lead them to their own conclusions. This is the policy known as Neutral Point of View.
+| answer_2 = Replicate the best information from published authors, word-for-word.
+| explanation_2 = Incorrect. You should be using reliable, published information, but you want to be very careful not to plagiarize, or closely paraphrase, those authors. Instead, you should seek out good information and summarize those facts using your own words.
+
+}}
+WIKISLIDE
+  end
+
+  let(:image_wikitext) do
+    <<-WIKISLIDE
+== Five Pillars: The core rules of Wikipedia ==
+
+{{Training module image
+| image = File:Palace_of_Fine_Arts%2C_five_pillars.jpg
+| source = https://upload.wikimedia.org/wikipedia/commons/thumb/e/ed/Palace_of_Fine_Arts%2C_five_pillars.jpg/640px-Palace_of_Fine_Arts%2C_five_pillars.jpg
+| layout = alt-layout-40-right
+| credit = Photo by Eryk Salvaggio
+}}
+
+Wikipedia is the encyclopedia anyone can edit, but there's a lot of collaboration behind every article. You'll work with many people to build Wikipedia.
+    WIKISLIDE
+  end
+
   describe '#title' do
     it 'extracts title from translation-enabled source wikitext' do
       output = WikiSlideParser.new(source_wikitext.dup).title
@@ -52,6 +84,18 @@ WIKISLIDE
       expect(output).to match(/\*\*Minor to moderate safe spaces violations\*\*/)
       output = WikiSlideParser.new(translated_wikitext.dup).content
       expect(output).to match(/\*\*Transgresiones sutiles o moderadas a los espacios seguros\*\*/)
+    end
+    it 'converts an image template into figure markup' do
+      output = WikiSlideParser.new(image_wikitext.dup).content
+      expect(output).to match(/Eryk Salvaggio/)
+    end
+  end
+
+  describe '#quiz' do
+    it 'converts a wiki template into a hash representing a quiz' do
+      output = WikiSlideParser.new(quiz_wikitext.dup).quiz
+      expect(output[:correct_answer_id]).to eq(1)
+      expect(output[:answers].count).to eq(2)
     end
   end
 end
