@@ -1,19 +1,24 @@
 # frozen_string_literal: true
 
+require "#{Rails.root}/lib/wikitext"
+
 #= Takes wikitext for an on-wiki slide and extracts title and content
 class WikiSlideParser
   def initialize(wikitext)
-    @wikitext = wikitext
+    @wikitext = wikitext&.dup || +''
     set_utf8_encoding
     remove_noinclude
     remove_translation_markers
     remove_translate_tags
     extract_quiz_template
-    convert_image_template
+    convert_image_templates
+    convert_video_templates
+    convert_button_templates
   end
 
   # The first translated line is the slide title
   def title
+    return '' if @wikitext.blank?
     title = @wikitext.lines.first.chomp
     # remove header markup for level 2 or lower
     title.gsub(/==+/, '').strip
@@ -21,9 +26,12 @@ class WikiSlideParser
 
   # Everything after the first translated line is the slide content
   def content
-    wikitext = @wikitext.lines[1..-1].join
-    wikitext.gsub!(/^\n*/) # Remove leading newlines
-    Wikitext.mediawiki_to_markdown(wikitext)
+    return '' if @wikitext.blank?
+    wikitext = @wikitext.lines[1..-1].join # Line 0 is the title
+    wikitext[0] = '' while wikitext[0] == "\n" # Remove leading newlines
+    markdown = Wikitext.mediawiki_to_markdown(wikitext)
+    # Make sure first line after a figure gets parsed as a new paragraph
+    markdown.gsub("figure>\n", "figure>\n\n")
   end
 
   def quiz
@@ -46,7 +54,9 @@ class WikiSlideParser
   def remove_translation_markers
     # Remove both marker and any trailing whitespace after it,
     # which may interfere with correct markdown conversion.
-    @wikitext.gsub!(/<!--.+?-->\s*\n*/, '')
+    # Matches any amount of horizontal whitespace (\h) but at most
+    # one newline, to prevent concatenating the title with the contents.
+    @wikitext.gsub!(/<!--.+?-->\h*\n??/, '')
   end
 
   def remove_translate_tags
@@ -54,10 +64,12 @@ class WikiSlideParser
     # which may interfere with correct markdown conversion.
     @wikitext.gsub!(/<translate>\s*/, '')
     @wikitext.gsub!(%r{\s*</translate>}, '')
+    @wikitext.gsub!(/<tvar.*?>/, '')
+    @wikitext.gsub!(%r{</>}, '')
   end
 
   def extract_quiz_template
-    @wikitext.gsub!(/(?<template>{{Training module quiz.*\n}})/m, '')
+    @wikitext.gsub!(/(?<template>{{Training module quiz.*?\n}})/m, '')
     @quiz_template = Regexp.last_match && Regexp.last_match['template']
   end
 
@@ -96,36 +108,89 @@ class WikiSlideParser
     match && match['value']
   end
 
-  def convert_image_template
-    @wikitext.gsub!(/(?<image>{{Training module image.*\n}})/m, 'IMAGE_PLACEHOLDER')
-    @image_template = Regexp.last_match && Regexp.last_match['image']
-    return unless @image_template
-    @wikitext.gsub!('IMAGE_PLACEHOLDER', figure_markup)
+  def convert_image_templates
+    # Get all the image templates on the page to allow for multiple images in the same slide
+    image_templates = @wikitext.scan(/(?<image>{{Training module image.*?\n}})/im)
+    return unless image_templates
+    # Replace each one with the correct figure markup
+    image_templates.each do |template|
+      @wikitext.sub! template[0], figure_markup_from_template(template[0])
+    end
   end
 
-  def figure_markup
+  def convert_video_templates
+    # Get all the video templates on the page to allow for multiple videos in the same slide
+    video_templates = @wikitext.scan(/(?<video>{{Training module video.*?\n}})/im)
+    return unless video_templates
+    # Replace each one with the correct video markup
+    video_templates.each do |template|
+      @wikitext.sub! template[0], video_markup_from_template(template[0])
+    end
+  end
+
+  def convert_button_templates
+    # Get all the button templates on the page to allow for multiple buttons in the same slide
+    button_templates = @wikitext.scan(/(?<button>{{Training module button.*?\n}})/im)
+    return unless button_templates
+    # Replace each one with the correct button markup
+    button_templates.each do |template|
+      @wikitext.sub! template[0], button_markup_from_template(template[0])
+    end
+  end
+
+  def figure_markup_from_template(template)
+    image_layout = image_layout_from(template)
+    image_source = image_source_from(template)
+    image_filename = image_filename_from(template)
+    image_caption = image_caption_from(template)
+    image_credit = image_credit_from(template)
     <<-FIGURE
 <figure class="#{image_layout}"><img src="#{image_source}" />
-<figcaption class="image-credit">
+<figcaption class="#{'image-credit' if image_credit}">#{image_caption}
 <a href="https://commons.wikimedia.org/wiki/#{image_filename}">#{image_credit}</a>
 </figcaption>
 </figure>
     FIGURE
   end
 
-  def image_layout
-    template_parameter_value(@image_template, 'layout')
+  def video_markup_from_template(template)
+    video_source = video_source_from(template)
+    <<-VIDEO
+<iframe width="420" height="315" src="#{video_source}" frameborder="0" allowfullscreen></iframe>
+    VIDEO
   end
 
-  def image_source
-    template_parameter_value(@image_template, 'source')
+  def button_markup_from_template(template)
+    button_text = template_parameter_value(template, 'text')
+    button_link = template_parameter_value(template, 'link')
+    <<-BUTTON
+<div class="training__button-container"><a target="_blank" class="btn btn-primary" href="#{button_link}">
+#{button_text}
+</a></div>
+    BUTTON
   end
 
-  def image_filename
-    template_parameter_value(@image_template, 'image')
+  def image_layout_from(template)
+    template_parameter_value(template, 'layout')
   end
 
-  def image_credit
-    template_parameter_value(@image_template, 'credit')
+  def image_source_from(template)
+    template_parameter_value(template, 'source')
+  end
+
+  def image_filename_from(template)
+    template_parameter_value(template, 'image')
+  end
+
+  def image_caption_from(template)
+    template_parameter_value(template, 'caption')
+  end
+
+  def image_credit_from(template)
+    template_parameter_value(template, 'credit')
+  end
+
+  def video_source_from(template)
+    template_parameter_value(template, 'source')
   end
 end
